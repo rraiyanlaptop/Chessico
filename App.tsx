@@ -52,6 +52,7 @@ const App: React.FC = () => {
   
   const [confirmResign, setConfirmResign] = useState(false);
   const [confirmDraw, setConfirmDraw] = useState(false);
+  const [drawOfferFrom, setDrawOfferFrom] = useState<'w' | 'b' | null>(null);
   const [drawDeclineMessage, setDrawDeclineMessage] = useState<string | null>(null);
 
   const [hint, setHint] = useState<HintResult | null>(null);
@@ -100,8 +101,8 @@ const App: React.FC = () => {
   };
 
   const getResultDescription = () => {
-    if (manualResult?.type === 'resign') return 'Result by resignation';
-    if (manualResult?.type === 'draw') return 'Result by agreement';
+    if (manualResult?.type === 'resign') return `Resignation by ${manualResult.winner === 'w' ? 'Black' : 'White'}`;
+    if (manualResult?.type === 'draw') return 'Draw by agreement';
     if (game.isCheckmate()) return 'Result by checkmate';
     if (game.isStalemate()) return 'Result by stalemate';
     if (game.isThreefoldRepetition()) return 'Result by threefold repetition';
@@ -180,21 +181,18 @@ const App: React.FC = () => {
         setViewIndex(newMoveIndex);
         setAnalysis(null); 
         setHint(null);
+        setDrawOfferFrom(null); // Clear any active draw offer on move
+        setDrawDeclineMessage(null);
         
         if (turnBefore === orientation) {
           setPremove(null);
         }
 
-        setDrawDeclineMessage(null);
-        
         // Auto-flip for local multiplayer
         if (mode === GameMode.LOCAL && autoFlip) {
           setOrientation(g.turn() === 'w' ? 'w' : 'b');
         }
 
-        // Live Move Evaluation (Only evaluate human/player moves in AI mode, or both in Local)
-        // Privacy rule: Only the player who made the move sees the classification in real-time.
-        // We'll calculate it, but the UI component (Board) will decide whether to display it based on turn.
         const historyForEval = g.history();
         const moveSAN = historyForEval[historyForEval.length - 1];
         
@@ -232,6 +230,45 @@ const App: React.FC = () => {
       return false;
     }
   }, [game, moveStack, viewIndex, mode, orientation, autoFlip, playSound, isGameOver]);
+
+  const handleResign = () => {
+    if (isGameOver) return;
+    const winner = game.turn() === 'w' ? 'b' : 'w';
+    setManualResult({ type: 'resign', winner });
+    playSound('gameover');
+    setConfirmResign(false);
+  };
+
+  const handleOfferDraw = async () => {
+    if (isGameOver) return;
+    setConfirmDraw(false);
+    
+    if (mode === GameMode.AI) {
+      setIsThinking(true);
+      const accepted = await gemini.shouldAcceptDraw(game.fen(), game.history());
+      setIsThinking(false);
+      if (accepted) {
+        setManualResult({ type: 'draw' });
+        playSound('gameover');
+      } else {
+        setDrawDeclineMessage("AI declined the draw offer.");
+        setTimeout(() => setDrawDeclineMessage(null), 3000);
+      }
+    } else {
+      // Local multiplayer
+      setDrawOfferFrom(game.turn());
+    }
+  };
+
+  const handleAcceptDraw = () => {
+    setManualResult({ type: 'draw' });
+    playSound('gameover');
+    setDrawOfferFrom(null);
+  };
+
+  const handleDeclineDraw = () => {
+    setDrawOfferFrom(null);
+  };
 
   const undoMove = useCallback(() => {
     if (moveStack.length === 0 || isThinking) return;
@@ -325,21 +362,17 @@ const App: React.FC = () => {
     setManualResult(null);
     setPremove(null);
     setLiveEvaluations({});
+    setDrawOfferFrom(null);
     setShowReviewOverlay(false);
     hasAutoSavedRef.current = false;
     playSound('start');
   };
 
   const currentMoveReview = useMemo(() => {
-    // Priority 1: Full game review data
     if (reviewData) {
       return reviewData.evaluations.find(e => e.moveIndex === viewIndex) || null;
     }
-    // Priority 2: Real-time live evaluation (only show for the player who just moved)
     if (liveEvaluations[viewIndex]) {
-      // Logic for privacy: only show the move classification for the move that just happened 
-      // AND only if it matches who we are or if it's local.
-      // For a smoother UX, we just return it here, but Board handles turning it off for the opponent.
       return {
         moveIndex: viewIndex,
         san: fullGameHistorySAN[viewIndex] || '',
@@ -405,7 +438,27 @@ const App: React.FC = () => {
         </div>
 
         <div className="flex flex-col items-center flex-1 lg:overflow-y-auto no-scrollbar">
-          <div className="w-full max-w-[min(94vw,640px)] space-y-2">
+          <div className="w-full max-w-[min(94vw,640px)] space-y-2 relative">
+            
+            {drawOfferFrom && (
+               <div className="absolute top-12 left-0 right-0 z-[120] flex justify-center animate-in slide-in-from-top-4 duration-300">
+                  <div className="bg-[#312e2b] border border-white/10 p-3 rounded-lg shadow-2xl flex items-center gap-4">
+                    <span className="text-xs font-bold text-white">Draw offered by {drawOfferFrom === 'w' ? 'White' : 'Black'}</span>
+                    <div className="flex gap-2">
+                      <button onClick={handleAcceptDraw} className="px-3 py-1 bg-[#81b64c] text-white text-[10px] font-black uppercase rounded">Accept</button>
+                      <button onClick={handleDeclineDraw} className="px-3 py-1 bg-red-600 text-white text-[10px] font-black uppercase rounded">Decline</button>
+                    </div>
+                  </div>
+               </div>
+            )}
+
+            {drawDeclineMessage && (
+               <div className="absolute top-12 left-0 right-0 z-[120] flex justify-center animate-in fade-in duration-300">
+                  <div className="bg-red-600/90 text-white px-4 py-2 rounded-full text-xs font-bold shadow-lg">
+                    {drawDeclineMessage}
+                  </div>
+               </div>
+            )}
             
             <div className="flex justify-between items-center px-3 py-1.5 bg-[#21201d] rounded-t border-b border-white/5">
               <div className="flex items-center gap-2">
@@ -437,7 +490,7 @@ const App: React.FC = () => {
                 hint={hint}
                 mode={mode}
                 evaluation={currentMoveReview}
-                hideOpponentEval={!reviewData && mode === GameMode.AI} // Hide AI's quality if not in Review Mode
+                hideOpponentEval={!reviewData && mode === GameMode.AI} 
               />
               
               {isGameOver && !showReviewOverlay && (
@@ -566,6 +619,40 @@ const App: React.FC = () => {
             </div>
 
             <div className="bg-[#262421] rounded-lg p-4 space-y-3 shadow-lg border border-white/5">
+              
+              {/* Resign and Draw Confirmation UI */}
+              <div className="grid grid-cols-2 gap-2">
+                {!confirmResign ? (
+                   <button 
+                     onClick={() => setConfirmResign(true)} 
+                     disabled={isGameOver}
+                     className="py-2.5 bg-[#312e2b] hover:bg-red-900/40 text-white rounded border border-white/5 text-[10px] font-black uppercase tracking-widest transition-colors disabled:opacity-20"
+                   >
+                     ⚐ Resign
+                   </button>
+                ) : (
+                  <div className="flex gap-1">
+                    <button onClick={handleResign} className="flex-1 py-2 bg-red-600 text-white rounded text-[10px] font-black uppercase">Yes</button>
+                    <button onClick={() => setConfirmResign(false)} className="flex-1 py-2 bg-slate-700 text-white rounded text-[10px] font-black uppercase">No</button>
+                  </div>
+                )}
+
+                {!confirmDraw ? (
+                   <button 
+                     onClick={() => setConfirmDraw(true)} 
+                     disabled={isGameOver || !!drawOfferFrom}
+                     className="py-2.5 bg-[#312e2b] hover:bg-slate-700 text-white rounded border border-white/5 text-[10px] font-black uppercase tracking-widest transition-colors disabled:opacity-20"
+                   >
+                     ½ Draw
+                   </button>
+                ) : (
+                  <div className="flex gap-1">
+                    <button onClick={handleOfferDraw} className="flex-1 py-2 bg-[#81b64c] text-white rounded text-[10px] font-black uppercase">Ask</button>
+                    <button onClick={() => setConfirmDraw(false)} className="flex-1 py-2 bg-slate-700 text-white rounded text-[10px] font-black uppercase">No</button>
+                  </div>
+                )}
+              </div>
+
               <div className="flex justify-between items-center gap-2">
                  <button onClick={saveGame} title="Save" className="flex-1 py-2 bg-[#312e2b] rounded border border-white/5 text-sm">💾</button>
                  <button onClick={loadGame} title="Load" className="flex-1 py-2 bg-[#312e2b] rounded border border-white/5 text-sm">📂</button>

@@ -39,9 +39,6 @@ export class GeminiChessService {
     }
   }
 
-  /**
-   * Evaluates a single move in real-time during a live game.
-   */
   async evaluateMove(fenBefore: string, moveSAN: string, history: string[]): Promise<MoveCategory | null> {
     const prompt = `
       Act as a world-class chess coach. Evaluate this specific move:
@@ -70,6 +67,44 @@ export class GeminiChessService {
     } catch (error) {
       console.error("Move evaluation error:", error);
       return null;
+    }
+  }
+
+  async shouldAcceptDraw(fen: string, history: string[]): Promise<boolean> {
+    const prompt = `
+      You are playing a chess game. Your opponent offered a draw.
+      Current FEN: ${fen}
+      History: ${history.slice(-10).join(', ')}
+      
+      Analyze the position. Would a strong engine accept a draw here? 
+      Accept if:
+      - The position is objectively equal (e.g., -0.5 to +0.5).
+      - It's a dead drawn endgame.
+      - You have significantly less time (assume time pressure if move count > 40).
+      
+      Return JSON: { "accept": true/false, "reason": "short explanation" }
+    `;
+
+    try {
+      const response = await this.ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              accept: { type: Type.BOOLEAN },
+              reason: { type: Type.STRING }
+            },
+            required: ["accept", "reason"]
+          }
+        }
+      });
+      const result = JSON.parse(response.text.trim());
+      return result.accept;
+    } catch (error) {
+      return false;
     }
   }
 
