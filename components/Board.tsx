@@ -1,7 +1,9 @@
+
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Chess } from 'chess.js';
 import { ChessPiece } from './ChessPiece';
-import { PieceSymbol, HintResult, GameMode } from '../types';
+import { MoveClassificationIcon } from './MoveClassificationIcon';
+import { PieceSymbol, HintResult, GameMode, MoveEvaluation } from '../types';
 
 interface Arrow {
   from: string;
@@ -18,6 +20,8 @@ interface BoardProps {
   onPremove: (premove: { from: string; to: string } | null) => void;
   hint: HintResult | null;
   mode: GameMode;
+  evaluation?: MoveEvaluation | null;
+  hideOpponentEval?: boolean;
 }
 
 export const Board: React.FC<BoardProps> = ({ 
@@ -28,7 +32,9 @@ export const Board: React.FC<BoardProps> = ({
   premove, 
   onPremove,
   hint,
-  mode
+  mode,
+  evaluation,
+  hideOpponentEval = false
 }) => {
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [validMoves, setValidMoves] = useState<string[]>([]);
@@ -58,12 +64,10 @@ export const Board: React.FC<BoardProps> = ({
     }
   }, [game.fen(), orientation, mode]);
 
-  // Helper to check if a piece can be interacted with
   const canInteractWithPiece = (pieceColor: string) => {
     if (mode === GameMode.AI) {
       return pieceColor === orientation;
     }
-    // In LOCAL mode, you can move the piece whose turn it is
     return pieceColor === game.turn();
   };
 
@@ -122,6 +126,7 @@ export const Board: React.FC<BoardProps> = ({
           setArrows(prev => {
             const exists = prev.find(a => a.from === newArrow.from && a.to === newArrow.to);
             return exists 
+              // Fixed: Corrected variable name from 'newMove' to 'newArrow'
               ? prev.filter(a => !(a.from === newArrow.from && a.to === newArrow.to))
               : [...prev, newArrow];
           });
@@ -257,6 +262,23 @@ export const Board: React.FC<BoardProps> = ({
     return list;
   }, [arrows, tempArrow, hint]);
 
+  // Logic to only show evaluation for the person who made the move in real-time
+  const showReviewIcon = useMemo(() => {
+    if (!evaluation || !lastMove) return false;
+    
+    // In "Normal" game mode (no global review data yet)
+    if (hideOpponentEval) {
+      // Chess.com standard: Don't show evaluation icons for the opponent's moves during a live game
+      // unless we specifically request a full game review.
+      const turnBeforeLast = game.turn() === 'w' ? 'b' : 'w';
+      if (turnBeforeLast !== orientation) {
+        return false;
+      }
+    }
+    
+    return true;
+  }, [evaluation, lastMove, game, orientation, hideOpponentEval]);
+
   return (
     <div 
       ref={boardRef}
@@ -275,6 +297,7 @@ export const Board: React.FC<BoardProps> = ({
           const coordColor = isDarkSquare(rIdx, cIdx) ? 'text-[#eeeed2]' : 'text-[#769656]';
           const isHighlighted = highlights.includes(square);
           const isPremoveTarget = premove?.to === square;
+          const isReviewTarget = showReviewIcon && lastMove?.to === square;
 
           return (
             <div
@@ -297,6 +320,12 @@ export const Board: React.FC<BoardProps> = ({
 
               {isHighlighted && (
                 <div className="absolute inset-0 border-[clamp(2px,0.5vw,4px)] border-[#ffa500]/60 z-20 pointer-events-none" />
+              )}
+
+              {isReviewTarget && evaluation && (
+                <div className="absolute -top-1 -right-1 z-50 animate-in zoom-in-50 duration-300">
+                  <MoveClassificationIcon category={evaluation.category} className="w-[clamp(16px,4vw,28px)] h-[clamp(16px,4vw,28px)] drop-shadow-md" />
+                </div>
               )}
 
               {isPremoveTarget && (

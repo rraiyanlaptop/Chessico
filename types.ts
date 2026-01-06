@@ -39,7 +39,17 @@ export interface HintResult {
   explanation: string;
 }
 
-export type MoveCategory = 'Brilliant' | 'Great' | 'Best' | 'Good' | 'Book' | 'Inaccuracy' | 'Mistake' | 'Blunder';
+export type MoveCategory = 
+  | 'Brilliant' 
+  | 'Great' 
+  | 'Best' 
+  | 'Excellent' 
+  | 'Good' 
+  | 'Book' 
+  | 'Inaccuracy' 
+  | 'Mistake' 
+  | 'Blunder' 
+  | 'Miss';
 
 export interface MoveEvaluation {
   moveIndex: number;

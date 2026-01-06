@@ -3,7 +3,8 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Chess, Move } from 'chess.js';
 import { Board } from './components/Board';
 import { AnalysisPanel } from './components/AnalysisPanel';
-import { GameMode, Difficulty, AnalysisResult, HintResult, ReviewData, MoveEvaluation } from './types';
+import { MoveClassificationIcon } from './components/MoveClassificationIcon';
+import { GameMode, Difficulty, AnalysisResult, HintResult, ReviewData, MoveEvaluation, MoveCategory } from './types';
 import { GeminiChessService } from './services/geminiService';
 
 const gemini = new GeminiChessService();
@@ -21,14 +22,16 @@ const SOUND_URLS = {
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
-  'Brilliant': 'text-cyan-400',
-  'Great': 'text-blue-400',
-  'Best': 'text-green-400',
-  'Good': 'text-emerald-400',
-  'Book': 'text-amber-600',
-  'Inaccuracy': 'text-yellow-400',
-  'Mistake': 'text-orange-400',
-  'Blunder': 'text-red-500'
+  'Brilliant': 'text-[#1bbbe3]',
+  'Great': 'text-[#5c8bb0]',
+  'Best': 'text-[#95bb4a]',
+  'Excellent': 'text-[#96bc4b]',
+  'Good': 'text-[#96bc4b]',
+  'Book': 'text-[#a88865]',
+  'Inaccuracy': 'text-[#f0c152]',
+  'Mistake': 'text-[#e6912c]',
+  'Blunder': 'text-[#b33430]',
+  'Miss': 'text-[#ff3b3b]'
 };
 
 const App: React.FC = () => {
@@ -58,6 +61,9 @@ const App: React.FC = () => {
   const [isReviewing, setIsReviewing] = useState(false);
   const [showReviewOverlay, setShowReviewOverlay] = useState(false);
 
+  // Live Move Evaluations for current game
+  const [liveEvaluations, setLiveEvaluations] = useState<Record<number, MoveCategory>>({});
+
   const historyEndRef = useRef<HTMLDivElement>(null);
   const audioRefs = useRef<Record<string, HTMLAudioElement>>({});
   const hasAutoSavedRef = useRef(false);
@@ -83,7 +89,6 @@ const App: React.FC = () => {
 
   const isGameOver = game.isGameOver() || manualResult !== null;
 
-  // Fix: Implemented getGameResult to determine the final game outcome string.
   const getGameResult = () => {
     if (manualResult) {
       if (manualResult.type === 'resign') return manualResult.winner === 'w' ? 'White Wins' : 'Black Wins';
@@ -94,7 +99,6 @@ const App: React.FC = () => {
     return 'Game Over';
   };
 
-  // Fix: Implemented getResultDescription to provide more context about the game end.
   const getResultDescription = () => {
     if (manualResult?.type === 'resign') return 'Result by resignation';
     if (manualResult?.type === 'draw') return 'Result by agreement';
@@ -106,12 +110,10 @@ const App: React.FC = () => {
     return 'Game concluded';
   };
 
-  // Fix: Implemented toggleOrientation to swap the board view.
   const toggleOrientation = useCallback(() => {
     setOrientation(prev => (prev === 'w' ? 'b' : 'w'));
   }, []);
 
-  // Fix: Implemented requestAnalysis to trigger Gemini positional analysis.
   const requestAnalysis = useCallback(async () => {
     if (isGameOver || isAnalyzing) return;
     setIsAnalyzing(true);
@@ -164,14 +166,18 @@ const App: React.FC = () => {
 
   const makeMove = useCallback((move: any) => {
     if (isGameOver) return false;
-    const g = new Chess(game.fen());
+    const fenBefore = game.fen();
+    const g = new Chess(fenBefore);
     const turnBefore = g.turn();
     try {
       const result = g.move(move);
       if (result) {
         const newStack = moveStack.slice(0, viewIndex + 1);
-        setMoveStack([...newStack, move]);
-        setViewIndex(newStack.length);
+        const finalStack = [...newStack, move];
+        const newMoveIndex = finalStack.length - 1;
+        
+        setMoveStack(finalStack);
+        setViewIndex(newMoveIndex);
         setAnalysis(null); 
         setHint(null);
         
@@ -185,6 +191,18 @@ const App: React.FC = () => {
         if (mode === GameMode.LOCAL && autoFlip) {
           setOrientation(g.turn() === 'w' ? 'w' : 'b');
         }
+
+        // Live Move Evaluation (Only evaluate human/player moves in AI mode, or both in Local)
+        // Privacy rule: Only the player who made the move sees the classification in real-time.
+        // We'll calculate it, but the UI component (Board) will decide whether to display it based on turn.
+        const historyForEval = g.history();
+        const moveSAN = historyForEval[historyForEval.length - 1];
+        
+        gemini.evaluateMove(fenBefore, moveSAN, historyForEval).then(category => {
+          if (category) {
+            setLiveEvaluations(prev => ({ ...prev, [newMoveIndex]: category }));
+          }
+        });
         
         if (g.isGameOver()) {
           playSound('gameover');
@@ -306,10 +324,31 @@ const App: React.FC = () => {
     setEvalScore(50);
     setManualResult(null);
     setPremove(null);
+    setLiveEvaluations({});
     setShowReviewOverlay(false);
     hasAutoSavedRef.current = false;
     playSound('start');
   };
+
+  const currentMoveReview = useMemo(() => {
+    // Priority 1: Full game review data
+    if (reviewData) {
+      return reviewData.evaluations.find(e => e.moveIndex === viewIndex) || null;
+    }
+    // Priority 2: Real-time live evaluation (only show for the player who just moved)
+    if (liveEvaluations[viewIndex]) {
+      // Logic for privacy: only show the move classification for the move that just happened 
+      // AND only if it matches who we are or if it's local.
+      // For a smoother UX, we just return it here, but Board handles turning it off for the opponent.
+      return {
+        moveIndex: viewIndex,
+        san: fullGameHistorySAN[viewIndex] || '',
+        category: liveEvaluations[viewIndex],
+        comment: ''
+      } as MoveEvaluation;
+    }
+    return null;
+  }, [reviewData, liveEvaluations, viewIndex, fullGameHistorySAN]);
 
   return (
     <div className="min-h-screen bg-[#262421] text-[#bababa] selection:bg-[#81b64c]/30">
@@ -397,6 +436,8 @@ const App: React.FC = () => {
                 onPremove={setPremove}
                 hint={hint}
                 mode={mode}
+                evaluation={currentMoveReview}
+                hideOpponentEval={!reviewData && mode === GameMode.AI} // Hide AI's quality if not in Review Mode
               />
               
               {isGameOver && !showReviewOverlay && (
@@ -405,7 +446,9 @@ const App: React.FC = () => {
                     <h2 className="text-3xl font-black text-white mb-2 uppercase tracking-tighter">{getGameResult()}</h2>
                     <p className="text-[#bababa] mb-6 text-xs font-serif italic">{getResultDescription()}</p>
                     <div className="space-y-3">
-                      <button onClick={startReview} className="w-full py-4 bg-[#3b82f6] text-white rounded-lg font-black uppercase tracking-widest text-xs shadow-xl">🔍 Review Game</button>
+                      <button onClick={startReview} disabled={isReviewing} className="w-full py-4 bg-[#3b82f6] text-white rounded-lg font-black uppercase tracking-widest text-xs shadow-xl flex items-center justify-center gap-2">
+                        {isReviewing ? 'Analyzing...' : <>🔍 Review Game</>}
+                      </button>
                       <button onClick={resetGame} className="w-full py-3 bg-[#81b64c] text-white rounded-lg font-black uppercase tracking-widest text-xs shadow-xl">New Match</button>
                     </div>
                   </div>
@@ -437,7 +480,18 @@ const App: React.FC = () => {
           </div>
 
           <div className="flex-1 flex flex-col p-4 space-y-4 overflow-hidden">
-            {/* Render AnalysisPanel if there is active analysis or if thinking/loading. */}
+            {currentMoveReview && currentMoveReview.comment && (
+              <div className="bg-[#1e293b] border-l-4 border-white/20 p-3 rounded-r-lg animate-slide-in shadow-lg">
+                <div className="flex items-center gap-2 mb-1">
+                  <MoveClassificationIcon category={currentMoveReview.category} className="w-5 h-5" />
+                  <span className={`text-[11px] font-black uppercase ${CATEGORY_COLORS[currentMoveReview.category]}`}>{currentMoveReview.category}</span>
+                </div>
+                <p className="text-[11px] text-slate-300 leading-tight italic">
+                  "{currentMoveReview.comment}"
+                </p>
+              </div>
+            )}
+
             {(analysis || isAnalyzing) && (
               <AnalysisPanel analysis={analysis} isLoading={isAnalyzing} />
             )}
@@ -482,21 +536,32 @@ const App: React.FC = () => {
 
             <div className="flex-1 bg-[#1b1917] rounded-lg p-2 overflow-y-auto custom-scroll border border-black/30 min-h-[120px]">
               <div className="grid grid-cols-[30px_1fr_1fr] gap-x-1 text-[12px] font-bold">
-                {Array.from({ length: Math.ceil(fullGameHistorySAN.length / 2) }).map((_, i) => (
-                  <React.Fragment key={i}>
-                    <div className="bg-[#262421] text-slate-500 flex items-center justify-center text-[9px] font-black mb-1 rounded-sm">{i + 1}</div>
-                    <div onClick={() => setViewIndex(i * 2)} className={`p-1.5 px-2 cursor-pointer rounded mb-1 flex items-center justify-between ${viewIndex === i * 2 ? 'bg-[#81b64c] text-white' : 'hover:bg-white/5 text-slate-200'}`}>
-                      <span>{fullGameHistorySAN[i*2]}</span>
-                      {reviewData?.evaluations.find(e => e.moveIndex === i*2) && <span className={`text-[8px] font-black ${CATEGORY_COLORS[reviewData.evaluations.find(e => e.moveIndex === i*2)!.category]}`}>•</span>}
-                    </div>
-                    {fullGameHistorySAN[i*2 + 1] && (
-                      <div onClick={() => setViewIndex(i * 2 + 1)} className={`p-1.5 px-2 cursor-pointer rounded mb-1 flex items-center justify-between ${viewIndex === i * 2 + 1 ? 'bg-[#81b64c] text-white' : 'hover:bg-white/5 text-slate-200'}`}>
-                        <span>{fullGameHistorySAN[i*2 + 1]}</span>
-                        {reviewData?.evaluations.find(e => e.moveIndex === i*2 + 1) && <span className={`text-[8px] font-black ${CATEGORY_COLORS[reviewData.evaluations.find(e => e.moveIndex === i*2 + 1)!.category]}`}>•</span>}
+                {Array.from({ length: Math.ceil(fullGameHistorySAN.length / 2) }).map((_, i) => {
+                  const whiteMoveIdx = i * 2;
+                  const blackMoveIdx = i * 2 + 1;
+                  const whiteEval = reviewData?.evaluations.find(e => e.moveIndex === whiteMoveIdx) || (liveEvaluations[whiteMoveIdx] ? { category: liveEvaluations[whiteMoveIdx] } : null);
+                  const blackEval = reviewData?.evaluations.find(e => e.moveIndex === blackMoveIdx) || (liveEvaluations[blackMoveIdx] ? { category: liveEvaluations[blackMoveIdx] } : null);
+
+                  return (
+                    <React.Fragment key={i}>
+                      <div className="bg-[#262421] text-slate-500 flex items-center justify-center text-[9px] font-black mb-1 rounded-sm">{i + 1}</div>
+                      <div onClick={() => setViewIndex(whiteMoveIdx)} className={`p-1.5 px-2 cursor-pointer rounded mb-1 flex items-center justify-between ${viewIndex === whiteMoveIdx ? 'bg-[#81b64c] text-white shadow-md ring-1 ring-white/10' : 'hover:bg-white/5 text-slate-200'}`}>
+                        <span>{fullGameHistorySAN[whiteMoveIdx]}</span>
+                        {whiteEval && (
+                          <MoveClassificationIcon category={whiteEval.category} className="w-3.5 h-3.5" />
+                        )}
                       </div>
-                    )}
-                  </React.Fragment>
-                ))}
+                      {fullGameHistorySAN[blackMoveIdx] && (
+                        <div onClick={() => setViewIndex(blackMoveIdx)} className={`p-1.5 px-2 cursor-pointer rounded mb-1 flex items-center justify-between ${viewIndex === blackMoveIdx ? 'bg-[#81b64c] text-white shadow-md ring-1 ring-white/10' : 'hover:bg-white/5 text-slate-200'}`}>
+                          <span>{fullGameHistorySAN[blackMoveIdx]}</span>
+                          {blackEval && (
+                            <MoveClassificationIcon category={blackEval.category} className="w-3.5 h-3.5" />
+                          )}
+                        </div>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </div>
             </div>
 
