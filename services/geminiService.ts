@@ -1,6 +1,5 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
-import { Difficulty, AnalysisResult } from "../types";
+import { Difficulty, AnalysisResult, HintResult, ReviewData } from "../types";
 
 const API_KEY = process.env.API_KEY || "";
 
@@ -45,6 +44,42 @@ export class GeminiChessService {
     }
   }
 
+  async getHint(fen: string, history: string[]): Promise<HintResult | null> {
+    const prompt = `
+      You are a world-class chess coach. 
+      Current FEN: ${fen}
+      History: ${history.slice(-5).join(', ')}
+      
+      Provide a hint for the next best move.
+      Return the response in JSON format.
+    `;
+
+    try {
+      const response = await this.ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              from: { type: Type.STRING, description: "The source square (e.g. e2)" },
+              to: { type: Type.STRING, description: "The destination square (e.g. e4)" },
+              san: { type: Type.STRING, description: "The move in SAN notation" },
+              explanation: { type: Type.STRING, description: "A very short explanation (1 sentence) of why this move is good" }
+            },
+            required: ["from", "to", "san", "explanation"]
+          }
+        }
+      });
+
+      return JSON.parse(response.text.trim());
+    } catch (error) {
+      console.error("Gemini Hint Error:", error);
+      return null;
+    }
+  }
+
   async analyzePosition(fen: string, history: string[]): Promise<AnalysisResult> {
     const prompt = `
       Analyze this chess position for educational purposes.
@@ -81,6 +116,54 @@ export class GeminiChessService {
         bestMove: "",
         suggestedPlan: "Continue playing."
       };
+    }
+  }
+
+  async getGameReview(history: string[]): Promise<ReviewData | null> {
+    const prompt = `
+      Act as a chess analyst. Review this full game history: ${history.join(', ')}.
+      
+      For EACH move, classify it as one of: [Brilliant, Great, Best, Good, Book, Inaccuracy, Mistake, Blunder].
+      Provide a concise summary of the game and an accuracy percentage (0-100) for both White and Black.
+      
+      Return as JSON.
+    `;
+
+    try {
+      const response = await this.ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              accuracyWhite: { type: Type.NUMBER },
+              accuracyBlack: { type: Type.NUMBER },
+              summary: { type: Type.STRING },
+              evaluations: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    moveIndex: { type: Type.INTEGER, description: "0-indexed move number in the history list" },
+                    san: { type: Type.STRING },
+                    category: { type: Type.STRING, description: "One of the move categories" },
+                    comment: { type: Type.STRING, description: "Brief explanation of the quality" }
+                  },
+                  required: ["moveIndex", "san", "category", "comment"]
+                }
+              }
+            },
+            required: ["accuracyWhite", "accuracyBlack", "summary", "evaluations"]
+          }
+        }
+      });
+
+      return JSON.parse(response.text.trim());
+    } catch (error) {
+      console.error("Gemini Game Review Error:", error);
+      return null;
     }
   }
 }

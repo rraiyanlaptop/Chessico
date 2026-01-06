@@ -1,20 +1,20 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Chessico</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
     <style>
         body {
             font-family: 'Inter', sans-serif;
             background-color: #262421;
             color: #f1f5f9;
             overflow-x: hidden;
+            touch-action: manipulation;
         }
         .font-serif {
             font-family: 'Playfair+Display', serif;
@@ -24,8 +24,8 @@
         .board-wrapper {
             background-color: #21201d;
             border-radius: 4px;
-            padding: 8px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+            padding: clamp(4px, 1.5vw, 12px);
+            box-shadow: 0 10px 40px rgba(0,0,0,0.6);
         }
 
         .square-texture {
@@ -45,43 +45,51 @@
             transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
+        /* Responsive Eval Bar */
         .eval-bar-container {
-            width: 24px;
-            height: 100%;
             background: #403d39;
-            border-radius: 2px;
+            border-radius: 4px;
             overflow: hidden;
             position: relative;
+            transition: all 0.3s ease;
         }
 
         .eval-bar-fill {
             position: absolute;
-            bottom: 0;
-            left: 0;
-            right: 0;
             background: #fff;
-            transition: height 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+            transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
         /* Sidebar scrollbar */
         .custom-scroll::-webkit-scrollbar {
-            width: 6px;
+            width: 4px;
         }
         .custom-scroll::-webkit-scrollbar-track {
-            background: #262421;
+            background: transparent;
         }
         .custom-scroll::-webkit-scrollbar-thumb {
             background: #3d3a37;
-            border-radius: 3px;
+            border-radius: 10px;
         }
 
-        /* Animations */
         @keyframes slideIn {
-            from { transform: translateX(20px); opacity: 0; }
-            to { transform: translateX(0); opacity: 1; }
+            from { transform: translateY(10px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
         }
         .animate-slide-in {
             animation: slideIn 0.3s ease-out forwards;
+        }
+
+        /* Mobile specific fixes */
+        @media (max-width: 1024px) {
+            .eval-bar-container {
+                width: 100% !important;
+                height: 8px !important;
+                margin-bottom: 8px;
+            }
+            .eval-bar-fill {
+                bottom: 0; top: 0; left: 0;
+            }
         }
     </style>
 <script type="importmap">
