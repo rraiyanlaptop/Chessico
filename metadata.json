@@ -1,0 +1,5 @@
+{
+  "name": "Chessico",
+  "description": "A feature-rich chess application with FIDE rules, Gemini-powered AI, position analysis, and educational coaching tools.",
+  "requestFramePermissions": []
+}
