@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Chess, Move } from 'chess.js';
 import { Board } from './components/Board';
@@ -44,6 +45,7 @@ const App: React.FC = () => {
   const [hasInteracted, setHasInteracted] = useState(false);
   const [manualResult, setManualResult] = useState<{ type: 'resign' | 'draw', winner?: 'w' | 'b' } | null>(null);
   const [premove, setPremove] = useState<{ from: string; to: string } | null>(null);
+  const [autoFlip, setAutoFlip] = useState(false);
   
   const [confirmResign, setConfirmResign] = useState(false);
   const [confirmDraw, setConfirmDraw] = useState(false);
@@ -81,7 +83,48 @@ const App: React.FC = () => {
 
   const isGameOver = game.isGameOver() || manualResult !== null;
 
-  // Auto-save logic
+  // Fix: Implemented getGameResult to determine the final game outcome string.
+  const getGameResult = () => {
+    if (manualResult) {
+      if (manualResult.type === 'resign') return manualResult.winner === 'w' ? 'White Wins' : 'Black Wins';
+      return 'Draw';
+    }
+    if (game.isCheckmate()) return game.turn() === 'w' ? 'Black Wins' : 'White Wins';
+    if (game.isDraw()) return 'Draw';
+    return 'Game Over';
+  };
+
+  // Fix: Implemented getResultDescription to provide more context about the game end.
+  const getResultDescription = () => {
+    if (manualResult?.type === 'resign') return 'Result by resignation';
+    if (manualResult?.type === 'draw') return 'Result by agreement';
+    if (game.isCheckmate()) return 'Result by checkmate';
+    if (game.isStalemate()) return 'Result by stalemate';
+    if (game.isThreefoldRepetition()) return 'Result by threefold repetition';
+    if (game.isInsufficientMaterial()) return 'Result by insufficient material';
+    if (game.isDraw()) return 'Result by draw';
+    return 'Game concluded';
+  };
+
+  // Fix: Implemented toggleOrientation to swap the board view.
+  const toggleOrientation = useCallback(() => {
+    setOrientation(prev => (prev === 'w' ? 'b' : 'w'));
+  }, []);
+
+  // Fix: Implemented requestAnalysis to trigger Gemini positional analysis.
+  const requestAnalysis = useCallback(async () => {
+    if (isGameOver || isAnalyzing) return;
+    setIsAnalyzing(true);
+    try {
+      const result = await gemini.analyzePosition(game.fen(), game.history());
+      setAnalysis(result);
+    } catch (e) {
+      console.error("Analysis Error:", e);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  }, [game, isGameOver, isAnalyzing]);
+
   useEffect(() => {
     if (isGameOver && moveStack.length > 0 && !hasAutoSavedRef.current) {
       const payload = {
@@ -89,17 +132,17 @@ const App: React.FC = () => {
         difficulty,
         orientation,
         manualResult,
+        mode,
         timestamp: Date.now(),
         isAutoSaved: true
       };
       localStorage.setItem('chessico_saved_game', JSON.stringify(payload));
       hasAutoSavedRef.current = true;
-      console.log("Game automatically saved at conclusion.");
     }
     if (!isGameOver) {
       hasAutoSavedRef.current = false;
     }
-  }, [isGameOver, moveStack, difficulty, orientation, manualResult]);
+  }, [isGameOver, moveStack, difficulty, orientation, manualResult, mode]);
 
   useEffect(() => {
     Object.entries(SOUND_URLS).forEach(([key, url]) => {
@@ -125,7 +168,6 @@ const App: React.FC = () => {
     const turnBefore = g.turn();
     try {
       const result = g.move(move);
-      
       if (result) {
         const newStack = moveStack.slice(0, viewIndex + 1);
         setMoveStack([...newStack, move]);
@@ -138,6 +180,11 @@ const App: React.FC = () => {
         }
 
         setDrawDeclineMessage(null);
+        
+        // Auto-flip for local multiplayer
+        if (mode === GameMode.LOCAL && autoFlip) {
+          setOrientation(g.turn() === 'w' ? 'w' : 'b');
+        }
         
         if (g.isGameOver()) {
           playSound('gameover');
@@ -166,50 +213,30 @@ const App: React.FC = () => {
       playSound('illegal');
       return false;
     }
-  }, [game, moveStack, viewIndex, mode, orientation, playSound, isGameOver]);
+  }, [game, moveStack, viewIndex, mode, orientation, autoFlip, playSound, isGameOver]);
 
   const undoMove = useCallback(() => {
     if (moveStack.length === 0 || isThinking) return;
     setManualResult(null);
     setPremove(null);
     setHint(null);
-    setConfirmResign(false);
-    setConfirmDraw(false);
-    const isAiTurn = game.turn() !== orientation;
-    const undoCount = (mode === GameMode.AI && !isAiTurn) ? 2 : 1;
-    
+    const undoCount = (mode === GameMode.AI && game.turn() === orientation) ? 2 : 1;
     const newStack = moveStack.slice(0, -undoCount);
     setMoveStack(newStack);
     setViewIndex(newStack.length - 1);
-    setAnalysis(null);
     playSound('move-self');
   }, [moveStack, mode, orientation, isThinking, game, playSound]);
-
-  useEffect(() => {
-    const isLatestPosition = viewIndex === moveStack.length - 1;
-    if (premove && game.turn() === orientation && !isGameOver && isLatestPosition) {
-      const timer = setTimeout(() => {
-        const success = makeMove(premove);
-        if (!success) {
-          setPremove(null);
-          playSound('illegal');
-        }
-      }, 30);
-      return () => clearTimeout(timer);
-    }
-  }, [game.turn(), premove, orientation, isGameOver, viewIndex, moveStack.length, makeMove, playSound]);
 
   const handleAIMove = useCallback(async () => {
     if (isGameOver || isThinking || mode !== GameMode.AI || viewIndex !== moveStack.length - 1) return;
     setIsThinking(true);
-    const currentHistory = game.history();
-    const moveSAN = await gemini.getAIMove(game.fen(), currentHistory, difficulty);
+    const moveSAN = await gemini.getAIMove(game.fen(), game.history(), difficulty);
     if (moveSAN) makeMove(moveSAN);
     setIsThinking(false);
   }, [game, difficulty, isThinking, makeMove, mode, viewIndex, moveStack.length, isGameOver]);
 
   useEffect(() => {
-    if (mode === GameMode.AI && game.turn() === (orientation === 'w' ? 'b' : 'w') && !isGameOver && viewIndex === moveStack.length - 1) {
+    if (mode === GameMode.AI && game.turn() !== orientation && !isGameOver && viewIndex === moveStack.length - 1) {
       const timer = setTimeout(handleAIMove, 600);
       return () => clearTimeout(timer);
     }
@@ -227,17 +254,8 @@ const App: React.FC = () => {
     }
   }, [game, isAnalyzing, analysis]);
 
-  const requestAnalysis = async () => {
-    setIsAnalyzing(true);
-    const result = await gemini.analyzePosition(game.fen(), game.history());
-    setAnalysis(result);
-    const val = parseFloat(result.evaluation.replace(/[^\d.-]/g, ''));
-    if (!isNaN(val)) setEvalScore(50 + (val * 5));
-    setIsAnalyzing(false);
-  };
-
   const requestHint = async () => {
-    if (isThinkingHint || isThinking || isGameOver || game.turn() !== orientation) return;
+    if (isThinkingHint || isThinking || isGameOver) return;
     setIsThinkingHint(true);
     const result = await gemini.getHint(game.fen(), game.history());
     if (result) {
@@ -259,13 +277,7 @@ const App: React.FC = () => {
   };
 
   const saveGame = () => {
-    const payload = {
-      moveStack,
-      difficulty,
-      orientation,
-      manualResult,
-      timestamp: Date.now()
-    };
+    const payload = { moveStack, difficulty, orientation, mode, timestamp: Date.now() };
     localStorage.setItem('chessico_saved_game', JSON.stringify(payload));
     alert('Game saved successfully!');
   };
@@ -276,29 +288,13 @@ const App: React.FC = () => {
       try {
         const payload = JSON.parse(saved);
         setMoveStack(payload.moveStack);
-        setDifficulty(payload.difficulty);
-        setOrientation(payload.orientation);
-        setManualResult(payload.manualResult);
+        setDifficulty(payload.difficulty || Difficulty.MEDIUM);
+        setOrientation(payload.orientation || 'w');
+        setMode(payload.mode || GameMode.AI);
         setViewIndex(payload.moveStack.length - 1);
         playSound('start');
-      } catch (e) {
-        console.error('Failed to load game', e);
-      }
-    } else {
-      alert('No saved game found.');
+      } catch (e) { console.error(e); }
     }
-  };
-
-  const downloadPGN = () => {
-    const g = new Chess();
-    moveStack.forEach(m => g.move(m));
-    const pgn = g.pgn();
-    const blob = new Blob([pgn], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `chessico_game_${Date.now()}.pgn`;
-    a.click();
   };
 
   const resetGame = () => {
@@ -310,91 +306,10 @@ const App: React.FC = () => {
     setEvalScore(50);
     setManualResult(null);
     setPremove(null);
-    setConfirmResign(false);
-    setConfirmDraw(false);
-    setDrawDeclineMessage(null);
     setShowReviewOverlay(false);
     hasAutoSavedRef.current = false;
     playSound('start');
   };
-
-  const handleResign = () => {
-    if (!confirmResign) {
-      setConfirmResign(true);
-      setConfirmDraw(false);
-      setTimeout(() => setConfirmResign(false), 3000);
-      return;
-    }
-    setManualResult({ type: 'resign', winner: game.turn() === 'w' ? 'b' : 'w' });
-    playSound('gameover');
-  };
-
-  const handleDrawOffer = async () => {
-    if (!confirmDraw) {
-      setConfirmDraw(true);
-      setConfirmResign(false);
-      setTimeout(() => setConfirmDraw(false), 3000);
-      return;
-    }
-    
-    setConfirmDraw(false);
-    
-    if (mode === GameMode.AI) {
-      setIsThinking(true);
-      const currentEval = (evalScore - 50) / 5;
-      await new Promise(r => setTimeout(r, 1000));
-      
-      if (Math.abs(currentEval) < 0.6) {
-        setManualResult({ type: 'draw' });
-        playSound('gameover');
-      } else {
-        setDrawDeclineMessage("AI declined draw offer");
-        setTimeout(() => setDrawDeclineMessage(null), 3000);
-        playSound('illegal');
-      }
-      setIsThinking(false);
-    } else {
-      setManualResult({ type: 'draw' });
-      playSound('gameover');
-    }
-  };
-
-  const toggleOrientation = () => {
-    setOrientation(prev => prev === 'w' ? 'b' : 'w');
-    playSound('start');
-  };
-
-  const getGameResult = () => {
-    if (manualResult) {
-      if (manualResult.type === 'resign') return "Resignation";
-      if (manualResult.type === 'draw') return "Draw";
-    }
-    if (game.isCheckmate()) return "Checkmate";
-    if (game.isStalemate()) return "Stalemate";
-    if (game.isDraw()) return "Draw";
-    return "Game Over";
-  };
-
-  const getResultDescription = () => {
-    if (manualResult) {
-      if (manualResult.type === 'resign') {
-        return `${manualResult.winner === 'w' ? 'White' : 'Black'} wins by resignation.`;
-      }
-      return "Game ended by mutual agreement.";
-    }
-    if (game.isCheckmate()) {
-      return `${game.turn() === 'w' ? 'Black' : 'White'} wins by checkmate.`;
-    }
-    if (game.isStalemate()) return "Game drawn by stalemate.";
-    if (game.isThreefoldRepetition()) return "Draw by threefold repetition.";
-    if (game.isInsufficientMaterial()) return "Draw by insufficient material.";
-    return "The game ended in a draw.";
-  };
-
-  const currentMoveReview = useMemo(() => {
-    if (!reviewData) return null;
-    return reviewData.evaluations.find(e => e.moveIndex === viewIndex);
-  }, [reviewData, viewIndex]);
 
   return (
     <div className="min-h-screen bg-[#262421] text-[#bababa] selection:bg-[#81b64c]/30">
@@ -402,12 +317,12 @@ const App: React.FC = () => {
         <div className="fixed inset-0 z-[150] bg-black/80 flex items-center justify-center backdrop-blur-md">
           <div className="text-center space-y-6 max-w-sm px-6">
             <h1 className="text-4xl lg:text-5xl font-black text-white uppercase tracking-tighter">Chessico</h1>
-            <p className="text-slate-400 text-sm">Grandmaster level analysis and AI opponents at your fingertips.</p>
+            <p className="text-slate-400 text-sm font-serif italic">The Ultimate AI & Multiplayer Arena</p>
             <button 
               onClick={() => { setHasInteracted(true); playSound('start'); }}
               className="w-full py-4 bg-[#81b64c] hover:bg-[#a1d06c] text-white rounded-xl font-black uppercase tracking-widest text-lg shadow-[0_10px_30px_rgba(129,182,76,0.4)] transition-all active:scale-95"
             >
-              Start Game
+              Enter Arena
             </button>
           </div>
         </div>
@@ -418,12 +333,11 @@ const App: React.FC = () => {
           <div className="bg-[#21201d] max-w-2xl w-full rounded-2xl border border-white/10 p-8 shadow-2xl space-y-8 animate-in zoom-in-95">
              <div className="flex justify-between items-start">
                <div>
-                 <h2 className="text-3xl font-black text-white uppercase tracking-tighter">Game Review</h2>
-                 <p className="text-slate-400 text-sm font-medium">AI Coaching Insights</p>
+                 <h2 className="text-3xl font-black text-white uppercase tracking-tighter">Analysis Review</h2>
+                 <p className="text-slate-400 text-sm font-medium">Grandmaster Insight Report</p>
                </div>
                <button onClick={() => setShowReviewOverlay(false)} className="text-slate-500 hover:text-white transition-colors">✕</button>
              </div>
-
              <div className="grid grid-cols-2 gap-8 py-4 border-y border-white/5">
                 <div className="text-center">
                   <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 block mb-2">White Accuracy</span>
@@ -434,67 +348,45 @@ const App: React.FC = () => {
                   <div className="text-5xl font-black text-slate-200 tracking-tighter">{reviewData.accuracyBlack}%</div>
                 </div>
              </div>
-
-             <div className="space-y-3">
-                <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Strategic Summary</span>
-                <p className="text-slate-300 italic text-sm leading-relaxed">"{reviewData.summary}"</p>
-             </div>
-
-             <button 
-               onClick={() => setShowReviewOverlay(false)} 
-               className="w-full py-4 bg-[#81b64c] hover:bg-[#a1d06c] text-white rounded-xl font-black uppercase tracking-widest text-sm shadow-xl transition-all"
-             >
-               Go to Game Board
-             </button>
+             <p className="text-slate-300 italic text-sm leading-relaxed">"{reviewData.summary}"</p>
+             <button onClick={() => setShowReviewOverlay(false)} className="w-full py-4 bg-[#81b64c] hover:bg-[#a1d06c] text-white rounded-xl font-black uppercase tracking-widest text-sm shadow-xl transition-all">Explore Board</button>
           </div>
         </div>
       )}
 
       <main className="max-w-[1440px] mx-auto flex flex-col lg:grid lg:grid-cols-[60px_1fr_360px] xl:grid-cols-[80px_1fr_420px] gap-4 lg:gap-6 p-3 lg:p-6 h-screen overflow-hidden">
         
-        {/* Desktop Evaluation Bar */}
         <div className="hidden lg:flex flex-col h-[min(80vh,600px)] py-12 items-center">
           <div className="eval-bar-container border border-white/5 w-6 h-full shadow-lg">
-            <div 
-              className="eval-bar-fill shadow-[0_-2px_10px_rgba(255,255,255,0.3)]" 
-              style={{ height: `${evalScore}%`, bottom: 0, left: 0, right: 0 }}
-            />
+            <div className="eval-bar-fill" style={{ height: `${evalScore}%`, bottom: 0, left: 0, right: 0 }} />
             <span className={`absolute left-1/2 -translate-x-1/2 text-[10px] font-black ${evalScore > 50 ? 'top-2 text-black' : 'bottom-2 text-white'}`}>
               {Math.abs((evalScore - 50) / 5).toFixed(1)}
             </span>
           </div>
         </div>
 
-        {/* Board & Player Area */}
-        <div className="flex flex-col items-center flex-1 lg:overflow-y-auto custom-scroll no-scrollbar">
+        <div className="flex flex-col items-center flex-1 lg:overflow-y-auto no-scrollbar">
           <div className="w-full max-w-[min(94vw,640px)] space-y-2">
             
-            {/* Mobile Evaluation Bar */}
-            <div className="lg:hidden eval-bar-container border border-white/5 w-full h-2 shadow-lg relative">
-              <div 
-                className="eval-bar-fill shadow-md" 
-                style={{ width: `${evalScore}%`, height: '100%', left: 0, top: 0 }}
-              />
-            </div>
-
-            {/* Opponent Info */}
             <div className="flex justify-between items-center px-3 py-1.5 bg-[#21201d] rounded-t border-b border-white/5">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded bg-[#312e2b] flex items-center justify-center text-sm shadow-inner border border-white/5">🤖</div>
+                <div className="w-8 h-8 rounded bg-[#312e2b] flex items-center justify-center text-sm shadow-inner border border-white/5">
+                  {mode === GameMode.AI ? '🤖' : (orientation === 'w' ? '👤' : '👥')}
+                </div>
                 <div className="flex flex-col">
-                  <span className="text-xs font-bold text-white leading-none">Gemini AI</span>
-                  <span className="text-[9px] text-slate-500 uppercase tracking-widest font-black">{difficulty}</span>
+                  <span className="text-xs font-bold text-white leading-none">
+                    {mode === GameMode.AI ? 'Gemini AI' : (orientation === 'w' ? 'Player 2 (Black)' : 'Player 1 (White)')}
+                  </span>
+                  <span className="text-[9px] text-slate-500 uppercase tracking-widest font-black">
+                    {mode === GameMode.AI ? difficulty : 'Opponent'}
+                  </span>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                {premove && (
-                  <span className="bg-[#f06262] text-white text-[9px] font-black px-1.5 py-0.5 rounded animate-pulse tracking-widest uppercase">PREMOVE</span>
-                )}
-                <div className="bg-[#1b1917] px-2 py-1 rounded text-xs font-mono font-bold text-white shadow-inner border border-white/5">10:00</div>
+              <div className={`bg-[#1b1917] px-2 py-1 rounded text-xs font-mono font-bold text-white shadow-inner border border-white/5 ${game.turn() !== orientation && mode === GameMode.LOCAL ? 'ring-1 ring-[#81b64c]' : ''}`}>
+                10:00
               </div>
             </div>
 
-            {/* Board Container */}
             <div className="board-wrapper relative aspect-square w-full">
               <Board 
                 game={game} 
@@ -504,43 +396,30 @@ const App: React.FC = () => {
                 premove={premove}
                 onPremove={setPremove}
                 hint={hint}
+                mode={mode}
               />
               
               {isGameOver && !showReviewOverlay && (
                 <div className="absolute inset-0 z-[110] flex items-center justify-center bg-black/70 backdrop-blur-[2px] animate-in fade-in duration-300 rounded overflow-hidden">
-                  <div className="bg-[#262421] border border-white/10 p-6 lg:p-10 rounded shadow-[0_20px_50px_rgba(0,0,0,0.8)] text-center max-w-[300px] lg:max-w-[340px] w-full mx-4 transform animate-in zoom-in-95">
-                    <h2 className="text-3xl lg:text-4xl font-black text-white mb-2 uppercase tracking-tighter leading-none">{getGameResult()}</h2>
-                    <p className="text-[#bababa] mb-6 lg:mb-8 text-xs lg:text-sm font-medium italic">
-                      {getResultDescription()}
-                    </p>
+                  <div className="bg-[#262421] border border-white/10 p-6 lg:p-10 rounded shadow-2xl text-center max-w-[300px] w-full mx-4 transform animate-in zoom-in-95">
+                    <h2 className="text-3xl font-black text-white mb-2 uppercase tracking-tighter">{getGameResult()}</h2>
+                    <p className="text-[#bababa] mb-6 text-xs font-serif italic">{getResultDescription()}</p>
                     <div className="space-y-3">
-                      <button 
-                        onClick={startReview} 
-                        disabled={isReviewing}
-                        className="w-full py-4 bg-[#3b82f6] hover:bg-[#60a5fa] text-white rounded-lg font-black uppercase tracking-widest text-xs shadow-xl transition-all active:scale-95 flex items-center justify-center gap-2"
-                      >
-                        {isReviewing ? 'Analyzing...' : '🔍 Review Game'}
-                      </button>
-                      <button onClick={resetGame} className="w-full py-3 bg-[#81b64c] hover:bg-[#a1d06c] text-white rounded-lg font-black uppercase tracking-widest text-xs shadow-xl transition-all active:scale-95">New Match</button>
-                      <button onClick={requestAnalysis} className="w-full py-2 bg-[#312e2b] text-[9px] font-black uppercase tracking-[0.2em] rounded-lg hover:bg-[#3d3a37] transition-colors border border-white/5">Depth Engine</button>
+                      <button onClick={startReview} className="w-full py-4 bg-[#3b82f6] text-white rounded-lg font-black uppercase tracking-widest text-xs shadow-xl">🔍 Review Game</button>
+                      <button onClick={resetGame} className="w-full py-3 bg-[#81b64c] text-white rounded-lg font-black uppercase tracking-widest text-xs shadow-xl">New Match</button>
                     </div>
                   </div>
                 </div>
               )}
-
-              {drawDeclineMessage && (
-                <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[105] bg-red-500 text-white px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest shadow-2xl animate-in slide-in-from-top-4 duration-300">
-                  {drawDeclineMessage}
-                </div>
-              )}
             </div>
 
-            {/* Player Info */}
             <div className="flex justify-between items-center px-3 py-1.5 bg-[#21201d] rounded-b border-t border-white/5">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded bg-[#312e2b] flex items-center justify-center text-sm shadow-inner border border-white/5">👤</div>
                 <div className="flex flex-col">
-                  <span className="text-xs font-bold text-white leading-none">Guest Player</span>
+                  <span className="text-xs font-bold text-white leading-none">
+                    {mode === GameMode.AI ? 'Guest Player' : (orientation === 'w' ? 'Player 1 (White)' : 'Player 2 (Black)')}
+                  </span>
                   <span className="text-[9px] text-slate-500 uppercase tracking-widest font-black">Rating: 1200?</span>
                 </div>
               </div>
@@ -548,126 +427,90 @@ const App: React.FC = () => {
                 10:00
               </div>
             </div>
-
-            {/* Mobile Quick Controls */}
-            <div className="lg:hidden flex gap-2 pt-2">
-               <button onClick={toggleOrientation} className="flex-1 py-2.5 bg-[#312e2b] rounded-lg text-xs font-bold flex items-center justify-center gap-2 border border-white/5">🔄 Flip</button>
-               <button onClick={requestHint} disabled={isThinkingHint || isThinking || game.turn() !== orientation} className="flex-1 py-2.5 bg-[#312e2b] rounded-lg text-xs font-bold flex items-center justify-center gap-2 border border-white/5 disabled:opacity-30">💡 Hint</button>
-               <button onClick={undoMove} disabled={moveStack.length === 0} className="flex-1 py-2.5 bg-[#312e2b] rounded-lg text-xs font-bold flex items-center justify-center gap-2 border border-white/5 disabled:opacity-30">⬅️ Undo</button>
-            </div>
           </div>
         </div>
 
-        {/* Sidebar Panel */}
         <div className="flex flex-col h-full bg-[#21201d] rounded shadow-2xl border border-white/5 mt-2 lg:mt-0 overflow-hidden">
           <div className="flex bg-[#262421] border-b border-white/5">
-            <button className="flex-1 py-3 text-[10px] font-black uppercase tracking-widest text-white border-b-2 border-[#81b64c] bg-[#312e2b]">Game</button>
+            <button className="flex-1 py-3 text-[10px] font-black uppercase tracking-widest text-white border-b-2 border-[#81b64c] bg-[#312e2b]">Match Settings</button>
             <button onClick={requestAnalysis} className="flex-1 py-3 text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-white transition-colors">Analysis</button>
           </div>
 
-          <div className="flex-1 flex flex-col p-3 space-y-3 overflow-hidden">
-            <div className="flex-1 bg-[#1b1917] rounded-lg p-1 overflow-y-auto custom-scroll border border-black/30 min-h-[120px]">
+          <div className="flex-1 flex flex-col p-4 space-y-4 overflow-hidden">
+            {/* Render AnalysisPanel if there is active analysis or if thinking/loading. */}
+            {(analysis || isAnalyzing) && (
+              <AnalysisPanel analysis={analysis} isLoading={isAnalyzing} />
+            )}
+
+            <div className="space-y-3 bg-[#262421] p-4 rounded-xl border border-white/5 shadow-lg">
+              <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Play Mode</span>
+              <div className="flex p-1 bg-[#1b1917] rounded-lg border border-white/5">
+                <button 
+                  onClick={() => setMode(GameMode.AI)} 
+                  className={`flex-1 py-2 text-[10px] font-black uppercase rounded-md transition-all ${mode === GameMode.AI ? 'bg-[#312e2b] text-white shadow-md' : 'text-slate-500'}`}
+                >
+                  Vs AI
+                </button>
+                <button 
+                  onClick={() => setMode(GameMode.LOCAL)} 
+                  className={`flex-1 py-2 text-[10px] font-black uppercase rounded-md transition-all ${mode === GameMode.LOCAL ? 'bg-[#312e2b] text-white shadow-md' : 'text-slate-500'}`}
+                >
+                  Vs Human
+                </button>
+              </div>
+
+              {mode === GameMode.AI ? (
+                <select 
+                  value={difficulty}
+                  onChange={(e) => setDifficulty(e.target.value as Difficulty)}
+                  className="w-full bg-[#312e2b] border-none rounded-lg p-2.5 text-[11px] font-bold outline-none focus:ring-1 focus:ring-[#81b64c] text-white"
+                >
+                  {Object.values(Difficulty).map(d => <option key={d} value={d}>{d} Difficulty</option>)}
+                </select>
+              ) : (
+                <div className="flex items-center justify-between px-2 py-1 bg-[#1b1917] rounded-lg border border-white/5">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Auto-flip board</span>
+                  <button 
+                    onClick={() => setAutoFlip(!autoFlip)} 
+                    className={`w-10 h-5 rounded-full relative transition-colors ${autoFlip ? 'bg-[#81b64c]' : 'bg-slate-700'}`}
+                  >
+                    <div className={`absolute top-1 left-1 w-3 h-3 bg-white rounded-full transition-transform ${autoFlip ? 'translate-x-5' : ''}`} />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="flex-1 bg-[#1b1917] rounded-lg p-2 overflow-y-auto custom-scroll border border-black/30 min-h-[120px]">
               <div className="grid grid-cols-[30px_1fr_1fr] gap-x-1 text-[12px] font-bold">
                 {Array.from({ length: Math.ceil(fullGameHistorySAN.length / 2) }).map((_, i) => (
                   <React.Fragment key={i}>
                     <div className="bg-[#262421] text-slate-500 flex items-center justify-center text-[9px] font-black mb-1 rounded-sm">{i + 1}</div>
-                    <div onClick={() => setViewIndex(i * 2)} className={`p-1.5 px-2 cursor-pointer rounded mb-1 transition-colors flex items-center justify-between ${viewIndex === i * 2 ? 'bg-[#81b64c] text-white' : 'hover:bg-white/5 text-slate-200'}`}>
+                    <div onClick={() => setViewIndex(i * 2)} className={`p-1.5 px-2 cursor-pointer rounded mb-1 flex items-center justify-between ${viewIndex === i * 2 ? 'bg-[#81b64c] text-white' : 'hover:bg-white/5 text-slate-200'}`}>
                       <span>{fullGameHistorySAN[i*2]}</span>
-                      {reviewData && reviewData.evaluations.find(e => e.moveIndex === i*2) && (
-                        <span className={`text-[8px] font-black ${CATEGORY_COLORS[reviewData.evaluations.find(e => e.moveIndex === i*2)!.category]}`}>•</span>
-                      )}
+                      {reviewData?.evaluations.find(e => e.moveIndex === i*2) && <span className={`text-[8px] font-black ${CATEGORY_COLORS[reviewData.evaluations.find(e => e.moveIndex === i*2)!.category]}`}>•</span>}
                     </div>
                     {fullGameHistorySAN[i*2 + 1] && (
-                      <div onClick={() => setViewIndex(i * 2 + 1)} className={`p-1.5 px-2 cursor-pointer rounded mb-1 transition-colors flex items-center justify-between ${viewIndex === i * 2 + 1 ? 'bg-[#81b64c] text-white' : 'hover:bg-white/5 text-slate-200'}`}>
+                      <div onClick={() => setViewIndex(i * 2 + 1)} className={`p-1.5 px-2 cursor-pointer rounded mb-1 flex items-center justify-between ${viewIndex === i * 2 + 1 ? 'bg-[#81b64c] text-white' : 'hover:bg-white/5 text-slate-200'}`}>
                         <span>{fullGameHistorySAN[i*2 + 1]}</span>
-                        {reviewData && reviewData.evaluations.find(e => e.moveIndex === i*2 + 1) && (
-                          <span className={`text-[8px] font-black ${CATEGORY_COLORS[reviewData.evaluations.find(e => e.moveIndex === i*2 + 1)!.category]}`}>•</span>
-                        )}
+                        {reviewData?.evaluations.find(e => e.moveIndex === i*2 + 1) && <span className={`text-[8px] font-black ${CATEGORY_COLORS[reviewData.evaluations.find(e => e.moveIndex === i*2 + 1)!.category]}`}>•</span>}
                       </div>
                     )}
                   </React.Fragment>
                 ))}
-                {fullGameHistorySAN.length === 0 && <div className="col-span-3 text-center py-8 text-slate-700 text-[10px] font-black uppercase tracking-widest opacity-20">No moves yet</div>}
-                <div ref={historyEndRef} />
               </div>
             </div>
 
-            {currentMoveReview && (
-              <div className="bg-[#1e293b] border-l-4 border-white/20 p-3 rounded-r-lg animate-slide-in">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className={`text-[10px] font-black uppercase ${CATEGORY_COLORS[currentMoveReview.category]}`}>{currentMoveReview.category}</span>
-                  <span className="text-xs font-mono font-bold text-white">{currentMoveReview.san}</span>
-                </div>
-                <p className="text-[11px] text-slate-300 leading-tight italic">
-                  "{currentMoveReview.comment}"
-                </p>
+            <div className="bg-[#262421] rounded-lg p-4 space-y-3 shadow-lg border border-white/5">
+              <div className="flex justify-between items-center gap-2">
+                 <button onClick={saveGame} title="Save" className="flex-1 py-2 bg-[#312e2b] rounded border border-white/5 text-sm">💾</button>
+                 <button onClick={loadGame} title="Load" className="flex-1 py-2 bg-[#312e2b] rounded border border-white/5 text-sm">📂</button>
+                 <button onClick={() => setMuted(!muted)} className="flex-1 py-2 bg-[#312e2b] rounded border border-white/5 text-sm">{muted ? '🔇' : '🔊'}</button>
               </div>
-            )}
-
-            {hint && (
-              <div className="bg-[#1e293b] border-l-4 border-[#3b82f6] p-3 rounded-r-lg animate-slide-in">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-[10px] font-black uppercase text-[#3b82f6]">Coach Hint</span>
-                  <span className="text-xs font-mono font-bold text-white">{hint.san}</span>
-                </div>
-                <p className="text-[11px] text-slate-300 leading-tight italic">
-                  "{hint.explanation}"
-                </p>
-              </div>
-            )}
-
-            {analysis && <AnalysisPanel analysis={analysis} isLoading={isAnalyzing} />}
-
-            <div className="bg-[#262421] rounded-lg p-3 lg:p-4 space-y-3 shadow-lg border border-white/5">
-              <div className="flex justify-between items-center">
-                <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Actions</span>
-                <div className="flex items-center gap-2">
-                   <button onClick={saveGame} title="Save Game" className="text-slate-500 hover:text-white transition-colors p-1 bg-[#312e2b] rounded border border-white/5 text-[10px]">💾</button>
-                   <button onClick={loadGame} title="Load Game" className="text-slate-500 hover:text-white transition-colors p-1 bg-[#312e2b] rounded border border-white/5 text-[10px]">📂</button>
-                   <button onClick={downloadPGN} title="Download PGN" className="text-slate-500 hover:text-white transition-colors p-1 bg-[#312e2b] rounded border border-white/5 text-[10px]">📥</button>
-                   <button onClick={() => setMuted(!muted)} className="text-slate-500 hover:text-white transition-colors p-1 bg-[#312e2b] rounded border border-white/5 text-[10px]">{muted ? '🔇' : '🔊'}</button>
-                </div>
-              </div>
-              
               <div className="grid grid-cols-2 gap-2">
-                <button 
-                  onClick={requestHint}
-                  disabled={isThinkingHint || isGameOver || game.turn() !== orientation}
-                  className="py-2.5 bg-[#312e2b] hover:bg-[#3d3a37] text-white rounded-lg text-[10px] font-black uppercase tracking-widest border border-white/5 disabled:opacity-30 transition-all flex items-center justify-center gap-2"
-                >
-                  {isThinkingHint ? '...' : '💡 Get Hint'}
-                </button>
-                <button onClick={toggleOrientation} className="py-2.5 bg-[#312e2b] hover:bg-[#3d3a37] text-white rounded-lg text-[10px] font-black uppercase tracking-widest border border-white/5 transition-all">
-                  🔄 Flip
-                </button>
+                <button onClick={requestHint} disabled={isThinkingHint || isGameOver} className="py-2.5 bg-[#312e2b] text-white rounded-lg text-[10px] font-black uppercase tracking-widest border border-white/5 disabled:opacity-30">💡 Hint</button>
+                <button onClick={toggleOrientation} className="py-2.5 bg-[#312e2b] text-white rounded-lg text-[10px] font-black uppercase tracking-widest border border-white/5">🔄 Flip</button>
               </div>
-
-              <select 
-                value={difficulty}
-                onChange={(e) => setDifficulty(e.target.value as Difficulty)}
-                className="w-full bg-[#312e2b] border-none rounded-lg p-2 text-[11px] font-bold outline-none focus:ring-1 focus:ring-[#81b64c] shadow-inner text-white"
-              >
-                {Object.values(Difficulty).map(d => <option key={d} value={d}>{d} Mode</option>)}
-              </select>
-
-              <div className="grid grid-cols-2 gap-2">
-                <button 
-                  onClick={handleResign} 
-                  disabled={isGameOver}
-                  className={`py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all border active:scale-95 ${confirmResign ? 'bg-red-600 text-white border-red-400 animate-pulse' : 'bg-[#312e2b] text-[#ff4d4d] border-[#ff4d4d]/20 hover:bg-[#ff4d4d]/10'}`}
-                >
-                  {confirmResign ? 'Really?' : '🏳️ Resign'}
-                </button>
-                <button 
-                  onClick={handleDrawOffer} 
-                  disabled={isGameOver || isThinking}
-                  className={`py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all border active:scale-95 ${confirmDraw ? 'bg-[#bababa] text-black border-white animate-pulse' : 'bg-[#312e2b] text-[#bababa] border-[#bababa]/20 hover:bg-[#bababa]/10'}`}
-                >
-                  {confirmDraw ? 'Agree?' : '½ Draw'}
-                </button>
-              </div>
-
-              <button onClick={resetGame} className="hidden lg:block w-full py-2.5 bg-[#81b64c] hover:bg-[#a1d06c] text-white rounded-lg font-black uppercase tracking-widest text-[10px] shadow-xl transition-all active:scale-95">Reset Game</button>
+              <button onClick={resetGame} className="w-full py-2.5 bg-[#81b64c] hover:bg-[#a1d06c] text-white rounded-lg font-black uppercase tracking-widest text-[10px] shadow-xl transition-all">Reset Arena</button>
             </div>
           </div>
         </div>

@@ -1,13 +1,14 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { Difficulty, AnalysisResult, HintResult, ReviewData } from "../types";
 
-const API_KEY = process.env.API_KEY || "";
-
+// The API key is obtained from process.env.API_KEY as per guidelines.
 export class GeminiChessService {
   private ai: GoogleGenAI;
 
   constructor() {
-    this.ai = new GoogleGenAI({ apiKey: API_KEY });
+    // Initializing with the required named parameter.
+    this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   }
 
   async getAIMove(fen: string, history: string[], difficulty: Difficulty): Promise<string> {
@@ -37,6 +38,7 @@ export class GeminiChessService {
         }
       });
 
+      // Using the .text property as per instructions.
       return response.text.trim().split(' ')[0].replace(/[^a-zA-Z0-9#+=-]/g, '');
     } catch (error) {
       console.error("Gemini AI Move Error:", error);

@@ -1,8 +1,7 @@
-
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Chess } from 'chess.js';
 import { ChessPiece } from './ChessPiece';
-import { PieceSymbol, HintResult } from '../types';
+import { PieceSymbol, HintResult, GameMode } from '../types';
 
 interface Arrow {
   from: string;
@@ -18,6 +17,7 @@ interface BoardProps {
   premove: { from: string; to: string } | null;
   onPremove: (premove: { from: string; to: string } | null) => void;
   hint: HintResult | null;
+  mode: GameMode;
 }
 
 export const Board: React.FC<BoardProps> = ({ 
@@ -27,14 +27,14 @@ export const Board: React.FC<BoardProps> = ({
   orientation, 
   premove, 
   onPremove,
-  hint
+  hint,
+  mode
 }) => {
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [validMoves, setValidMoves] = useState<string[]>([]);
   const [draggingSquare, setDraggingSquare] = useState<string | null>(null);
   const [promotionMove, setPromotionMove] = useState<{ from: string; to: string } | null>(null);
 
-  // Arrow & Highlight State
   const [arrows, setArrows] = useState<Arrow[]>([]);
   const [highlights, setHighlights] = useState<string[]>([]);
   const [rightDragStart, setRightDragStart] = useState<string | null>(null);
@@ -47,18 +47,25 @@ export const Board: React.FC<BoardProps> = ({
   const displayRows = orientation === 'w' ? rows : [...rows].reverse();
   const displayCols = orientation === 'w' ? cols : [...cols].reverse();
 
-  // Clear drawings on any new move and check for premove invalidation
   useEffect(() => {
     setArrows([]);
     setHighlights([]);
-
     if (premove) {
       const pieceAtFrom = game.get(premove.from as any);
-      if (!pieceAtFrom || pieceAtFrom.color !== orientation) {
+      if (!pieceAtFrom || (mode === GameMode.AI && pieceAtFrom.color !== orientation)) {
         onPremove(null);
       }
     }
-  }, [game.fen(), orientation]);
+  }, [game.fen(), orientation, mode]);
+
+  // Helper to check if a piece can be interacted with
+  const canInteractWithPiece = (pieceColor: string) => {
+    if (mode === GameMode.AI) {
+      return pieceColor === orientation;
+    }
+    // In LOCAL mode, you can move the piece whose turn it is
+    return pieceColor === game.turn();
+  };
 
   const getSquareFromCoords = (x: number, y: number) => {
     if (!boardRef.current) return null;
@@ -74,20 +81,18 @@ export const Board: React.FC<BoardProps> = ({
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.button === 0) { // Left click
+    if (e.button === 0) {
       setArrows([]);
       setHighlights([]);
       setRightDragStart(null);
       setTempArrow(null);
-      
       const square = getSquareFromCoords(e.clientX, e.clientY);
       if (square && !game.get(square as any) && premove) {
           onPremove(null);
       }
-    } else if (e.button === 2) { // Right click
+    } else if (e.button === 2) {
       const square = getSquareFromCoords(e.clientX, e.clientY);
       if (square) setRightDragStart(square);
-      if (premove) onPremove(null);
     }
   };
 
@@ -142,24 +147,9 @@ export const Board: React.FC<BoardProps> = ({
     }
 
     const piece = game.get(square as any);
-    if (piece && piece.color === orientation) {
+    if (piece && canInteractWithPiece(piece.color)) {
       setSelectedSquare(square);
-      
-      let moves;
-      if (game.turn() === orientation) {
-        moves = game.moves({ square: square as any, verbose: true });
-      } else {
-        const fenParts = game.fen().split(' ');
-        fenParts[1] = orientation;
-        
-        const tempGame = new Chess();
-        try {
-          tempGame.load(fenParts.join(' '));
-          moves = tempGame.moves({ square: square as any, verbose: true });
-        } catch (e) {
-          moves = [];
-        }
-      }
+      const moves = game.moves({ square: square as any, verbose: true });
       setValidMoves(moves.map(m => m.to));
     } else {
       setSelectedSquare(null);
@@ -168,11 +158,10 @@ export const Board: React.FC<BoardProps> = ({
   };
 
   const executeMove = (from: string, to: string) => {
-    const isMyTurn = game.turn() === orientation;
     const piece = game.get(from as any);
     const isPromotion = piece?.type === 'p' && (to[1] === '8' || to[1] === '1');
 
-    if (isMyTurn) {
+    if (mode === GameMode.LOCAL || game.turn() === orientation) {
       if (isPromotion) {
         setPromotionMove({ from, to });
       } else {
@@ -180,7 +169,7 @@ export const Board: React.FC<BoardProps> = ({
         setSelectedSquare(null);
         setValidMoves([]);
       }
-    } else {
+    } else if (mode === GameMode.AI) {
       onPremove({ from, to });
       setSelectedSquare(null);
       setValidMoves([]);
@@ -203,7 +192,7 @@ export const Board: React.FC<BoardProps> = ({
       return;
     }
     const piece = game.get(square as any);
-    if (piece && piece.color === orientation) {
+    if (piece && canInteractWithPiece(piece.color)) {
       e.dataTransfer.setData('sourceSquare', square);
       e.dataTransfer.effectAllowed = 'move';
       setDraggingSquare(square);
@@ -241,13 +230,8 @@ export const Board: React.FC<BoardProps> = ({
 
   const getSquareBaseColor = (rIdx: number, cIdx: number, square: string) => {
     const isDark = isDarkSquare(rIdx, cIdx);
-    
-    // Premove has highest priority visually
     if (premove?.from === square || premove?.to === square) return 'bg-[#f06262]';
-    
-    // Hint highlight
     if (hint?.from === square || hint?.to === square) return 'bg-[#3b82f6]/40 shadow-inner ring-2 ring-[#3b82f6]/20';
-
     const isSelected = selectedSquare === square;
     const isLastMove = lastMove?.from === square || lastMove?.to === square;
     if (isSelected || isLastMove) return 'bg-[#f6f669]';
@@ -300,7 +284,6 @@ export const Board: React.FC<BoardProps> = ({
               onDrop={(e) => handleDrop(e, square)}
               className={`square-texture relative cursor-pointer w-full h-full transition-colors duration-150 ${getSquareBaseColor(rIdx, cIdx, square)} ${isValidMove ? 'hover:brightness-110' : ''}`}
             >
-              {/* Coordinates - Responsive sizing */}
               {cIdx === 0 && (
                 <span className={`absolute left-0.5 top-0.5 text-[min(2.5vw,12px)] font-bold leading-none select-none ${coordColor}`}>
                   {row}
@@ -325,7 +308,7 @@ export const Board: React.FC<BoardProps> = ({
               {piece && (
                 <div 
                   className={`w-full h-full p-[2%] piece-transition z-10 flex items-center justify-center relative transition-all duration-200 ${isDragging ? 'opacity-30 scale-90 grayscale-[0.3]' : 'opacity-100 scale-100'}`}
-                  draggable={piece.color === orientation && !promotionMove}
+                  draggable={canInteractWithPiece(piece.color) && !promotionMove}
                   onDragStart={(e) => handleDragStart(e, square)}
                   onDragEnd={handleDragEnd}
                 >
@@ -353,63 +336,36 @@ export const Board: React.FC<BoardProps> = ({
         preserveAspectRatio="none"
       >
         <defs>
-          <marker
-            id="smart-arrowhead-narrow"
-            markerWidth="7"
-            markerHeight="7"
-            refX="5.5"
-            refY="3.5"
-            orient="auto"
-          >
+          <marker id="smart-arrowhead-narrow" markerWidth="7" markerHeight="7" refX="5.5" refY="3.5" orient="auto">
             <path d="M 0 1.5 L 6 3.5 L 0 5.5 L 1.5 3.5 Z" fill="#ffa500" fillOpacity="0.85" />
           </marker>
-          <marker
-            id="hint-arrowhead"
-            markerWidth="7"
-            markerHeight="7"
-            refX="5.5"
-            refY="3.5"
-            orient="auto"
-          >
+          <marker id="hint-arrowhead" markerWidth="7" markerHeight="7" refX="5.5" refY="3.5" orient="auto">
             <path d="M 0 1.5 L 6 3.5 L 0 5.5 L 1.5 3.5 Z" fill="#3b82f6" fillOpacity="0.85" />
           </marker>
         </defs>
         {allArrows.map((arrow, idx) => {
           const color = arrow.color || "#ffa500";
           const marker = arrow.color === '#3b82f6' ? 'url(#hint-arrowhead)' : 'url(#smart-arrowhead-narrow)';
-          const isPulsing = arrow.color === '#3b82f6';
-
           const from = getSquareCenter(arrow.from);
           const to = getSquareCenter(arrow.to);
-          
           const fromColIdx = cols.indexOf(arrow.from[0]);
           const fromRowIdx = rows.indexOf(arrow.from[1]);
           const toColIdx = cols.indexOf(arrow.to[0]);
           const toRowIdx = rows.indexOf(arrow.to[1]);
-          
           const dc = Math.abs(toColIdx - fromColIdx);
           const dr = Math.abs(toRowIdx - fromRowIdx);
           const isKnightMove = (dc === 1 && dr === 2) || (dc === 2 && dr === 1);
-          
           const shorten = 3.8;
 
           if (isKnightMove) {
             let bx, by;
-            if (dr === 2) {
-              bx = from.x;
-              by = to.y;
-            } else {
-              bx = to.x;
-              by = from.y;
-            }
-
+            if (dr === 2) { bx = from.x; by = to.y; } else { bx = to.x; by = from.y; }
             const dxLast = to.x - bx;
             const dyLast = to.y - by;
             const angleLast = Math.atan2(dyLast, dxLast);
             const distLast = Math.sqrt(dxLast * dxLast + dyLast * dyLast);
             const endX = bx + (distLast - shorten) * Math.cos(angleLast);
             const endY = by + (distLast - shorten) * Math.sin(angleLast);
-
             return (
               <path
                 key={`${arrow.from}-${arrow.to}-${idx}`}
@@ -421,7 +377,7 @@ export const Board: React.FC<BoardProps> = ({
                 markerEnd={marker}
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                className={isPulsing ? 'animate-pulse' : ''}
+                className={arrow.color === '#3b82f6' ? 'animate-pulse' : ''}
               />
             );
           } else {
@@ -431,7 +387,6 @@ export const Board: React.FC<BoardProps> = ({
             const length = Math.sqrt(dx * dx + dy * dy);
             const endX = from.x + (length - shorten) * Math.cos(angle);
             const endY = from.y + (length - shorten) * Math.sin(angle);
-
             return (
               <line
                 key={`${arrow.from}-${arrow.to}-${idx}`}
@@ -444,7 +399,7 @@ export const Board: React.FC<BoardProps> = ({
                 strokeOpacity="0.8"
                 markerEnd={marker}
                 strokeLinecap="round"
-                className={isPulsing ? 'animate-pulse' : ''}
+                className={arrow.color === '#3b82f6' ? 'animate-pulse' : ''}
               />
             );
           }
@@ -455,13 +410,9 @@ export const Board: React.FC<BoardProps> = ({
         <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-[2px] animate-in fade-in duration-200">
           <div className="bg-[#262421] p-3 rounded-2xl border border-white/10 shadow-2xl flex gap-3 animate-in zoom-in-95">
             {(['q', 'r', 'b', 'n'] as PieceSymbol[]).map((p) => (
-              <button
-                key={p}
-                onClick={() => handlePromotionSelect(p)}
-                className="w-14 h-14 lg:w-20 lg:h-20 p-2 hover:bg-white/10 rounded-xl transition-colors group"
-              >
+              <button key={p} onClick={() => handlePromotionSelect(p)} className="w-14 h-14 lg:w-20 lg:h-20 p-2 hover:bg-white/10 rounded-xl transition-colors group">
                 <div className="w-full h-full group-hover:scale-110 transition-transform">
-                  <ChessPiece type={p} color={orientation} />
+                  <ChessPiece type={p} color={game.turn()} />
                 </div>
               </button>
             ))}
